@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Artism</title>
+  <style>
+    :root{
+      --bg:#0b3d2b;
+      --text:#9aa0a0;
+      --glass: rgba(255,255,255,0.03);
+      --accent: rgba(255,255,255,0.06);
+      --card-radius:12px;
+      --gap:16px;
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    }
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);}
+    .app{min-height:100%;display:flex;flex-direction:column;padding:28px;box-sizing:border-box;}
+    .search-wrap{display:flex;justify-content:center;margin-bottom:20px}
+    .search{width:100%;max-width:1100px;background:var(--glass);border-radius:999px;padding:12px 16px;display:flex;align-items:center;box-shadow:0 1px 0 rgba(0,0,0,0.2) inset}
+    .search input{flex:1;background:transparent;border:0;outline:0;color:var(--text);font-size:16px}
+    .search .count{margin-left:12px;color:var(--text);opacity:0.9;font-size:13px}
+    .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--gap);max-width:1100px;margin:0 auto}
+    @media (max-width:1100px){.grid{grid-template-columns:repeat(3,1fr)}}
+    @media (max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}}
+    @media (max-width:480px){.grid{grid-template-columns:1fr}}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));border-radius:var(--card-radius);padding:14px;cursor:pointer;display:flex;flex-direction:column;gap:8px;min-height:110px;align-items:flex-start;justify-content:center;border:1px solid rgba(255,255,255,0.03)}
+    .card h3{margin:0;font-size:15px;color:var(--text)}
+    .card p{margin:0;font-size:12px;color:var(--text);opacity:0.8}
+    .viewer{position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:20px;z-index:999}
+    .viewer .panel{width:100%;max-width:1200px;background:transparent;border-radius:10px;display:flex;flex-direction:column;gap:10px}
+    .viewer .frame-wrap{background:var(--accent);border-radius:8px;padding:8px}
+    iframe.game-frame{width:100%;height:640px;border:0;border-radius:6px;background:white}
+    .controls{display:flex;gap:8px;justify-content:flex-end}
+    .btn{background:rgba(255,255,255,0.06);color:var(--text);border:0;padding:8px 12px;border-radius:8px;cursor:pointer}
+    .btn:active{transform:translateY(1px)}
+    .small-note{font-size:12px;color:var(--text);opacity:0.7;text-align:center;margin-top:12px}
+    a.link{color:var(--text);opacity:0.9;text-decoration:underline}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="search-wrap">
+      <div class="search" role="search">
+        <input id="searchInput" placeholder="Ramp.Lite - Search 0 games..." aria-label="Search games" />
+        <div class="count" id="count">0 games</div>
+      </div>
+    </div>
+
+    <main>
+      <div class="grid" id="grid"></div>
+      <p class="small-note">i goon to you <a id="sourceLink" class="link" href="#" target="_blank" rel="noopener">https://aurafarming.net</a></p>
+    </main>
+  </div>
+
+  <div id="viewer" class="viewer" style="display:none">
+    <div class="panel">
+      <div class="frame-wrap" id="frameWrap">
+        <iframe id="gameFrame" class="game-frame" sandbox="allow-scripts allow-forms allow-same-origin"></iframe>
+      </div>
+      <div class="controls">
+        <button id="fullscreenBtn" class="btn">Fullscreen</button>
+        <button id="closeBtn" class="btn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const REPO_URL = 'https://github.com/hazexxv/games';
+    const GITHUB_TOKEN = '';
+
+    function parseOwnerRepo(url){
+      const u = new URL(url);
+      const parts = u.pathname.replace(/^\/+/, '').split('/');
+      if(parts.length < 2) throw new Error('Invalid GitHub repo URL: ' + url);
+      return { owner: parts[0], repo: parts[1] };
+    }
+    const { owner: OWNER, repo: REPO } = parseOwnerRepo(REPO_URL);
+
+    const grid = document.getElementById('grid');
+    const countEl = document.getElementById('count');
+    const searchInput = document.getElementById('searchInput');
+    const viewer = document.getElementById('viewer');
+    const gameFrame = document.getElementById('gameFrame');
+    const closeBtn = document.getElementById('closeBtn');
+    const fullscreenBtn = document.getElementById('fullscreenBtn');
+    const frameWrap = document.getElementById('frameWrap');
+    const sourceLink = document.getElementById('sourceLink');
+
+    sourceLink.href = REPO_URL;
+    sourceLink.textContent = REPO_URL;
+
+    function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
+
+    async function fetchJson(url){
+      const headers = { 'Accept':'application/vnd.github+json' };
+      if(GITHUB_TOKEN) headers['Authorization'] = 'Bearer ' + GITHUB_TOKEN;
+      const res = await fetch(url, { headers });
+      if(!res.ok) throw new Error(res.status + ' ' + res.statusText + ' — ' + url);
+      return res.json();
+    }
+
+    async function getRepo(){
+      return fetchJson(`https://api.github.com/repos/${OWNER}/${REPO}`);
+    }
+
+    async function listRepoTree(branch){
+      const data = await fetchJson(`https://api.github.com/repos/${OWNER}/${REPO}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
+      if(!data || !Array.isArray(data.tree)) throw new Error('Invalid tree response');
+      return data.tree.filter(item => item.type === 'blob');
+    }
+
+    async function fetchFileContent(branch, path){
+      const url = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`;
+      const headers = { 'Accept':'application/vnd.github+json' };
+      if(GITHUB_TOKEN) headers['Authorization'] = 'Bearer ' + GITHUB_TOKEN;
+      const res = await fetch(url, { headers });
+      if(!res.ok) throw new Error(res.status + ' ' + res.statusText + ' — ' + url);
+      const json = await res.json();
+      if(!json || !json.content || json.encoding !== 'base64') throw new Error('Unexpected contents response for ' + path);
+      return atob(json.content.replace(/\n/g, ''));
+    }
+
+    async function discoverGames(){
+      const repo = await getRepo();
+      const branch = repo.default_branch || 'main';
+      const blobs = await listRepoTree(branch);
+      const xmls = blobs.filter(b => b.path.toLowerCase().endsWith('.xml'));
+      if(xmls.length === 0) throw new Error('No XML files found in ' + REPO_URL + ' on branch ' + branch);
+      return { branch, games: xmls.map(x => ({ title: x.path.split('/').pop(), path: x.path })) };
+    }
+
+    function renderGrid(games){
+      grid.innerHTML = '';
+      const q = searchInput.value.trim().toLowerCase();
+      const filtered = games.filter(g => g.title.toLowerCase().includes(q) || g.path.toLowerCase().includes(q));
+      filtered.forEach(g => {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.tabIndex = 0;
+        card.innerHTML = `<h3>${escapeHtml(g.title)}</h3><p>${escapeHtml(g.path)}</p>`;
+        card.addEventListener('click', ()=> openGameAndNavigate(g));
+        card.addEventListener('keydown', (ev)=>{ if(ev.key === 'Enter') openGameAndNavigate(g); });
+        grid.appendChild(card);
+      });
+      countEl.textContent = `${filtered.length} games`;
+      searchInput.placeholder = `Ramp.Lite - Search ${filtered.length} games...`;
+    }
+
+    function openGameAndNavigate(game){
+      const encodedPath = encodeURIComponent(game.path);
+      const encodedTitle = encodeURIComponent(game.title);
+      const encodedBranch = encodeURIComponent(window._branch);
+      const newUrl = `${location.pathname}?path=${encodedPath}&title=${encodedTitle}&branch=${encodedBranch}`;
+      history.pushState({ path: game.path, title: game.title, branch: window._branch }, '', newUrl);
+      openGame(game);
+    }
+
+    async function openGame(game){
+      viewer.style.display = 'flex';
+      gameFrame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin');
+      gameFrame.src = 'about:blank';
+      await new Promise(resolve => {
+        if (gameFrame.contentDocument && gameFrame.contentDocument.readyState === 'complete') return resolve();
+        gameFrame.onload = () => resolve();
+      });
+      const text = await fetchFileContent(window._branch, game.path);
+      const looksLikeHtml = /<\s*html|<\s*body|<script|<!doctype html/i.test(text);
+      const finalHtml = looksLikeHtml
+        ? text
+        : `<!doctype html><meta charset="utf-8"><title>${escapeHtml(game.title)}</title>
+<style>html,body{height:100%;margin:0;background:#fff;color:#000;font-family:system-ui;padding:8px}</style>
+<pre>${escapeHtml(text)}</pre>`;
+      const doc = gameFrame.contentDocument || gameFrame.contentWindow.document;
+      doc.open();
+      doc.write(finalHtml);
+      doc.close();
+    }
+
+    closeBtn.addEventListener('click', ()=>{
+      history.pushState({}, '', location.pathname);
+      viewer.style.display = 'none';
+      gameFrame.src = 'about:blank';
+    });
+
+    fullscreenBtn.addEventListener('click', async ()=>{
+      const wrap = frameWrap;
+      try{
+        if(document.fullscreenElement){
+          await document.exitFullscreen();
+        } else {
+          if(wrap.requestFullscreen) await wrap.requestFullscreen();
+        }
+      }catch(e){}
+    });
+
+    window.addEventListener('popstate', ()=>{
+      const params = new URLSearchParams(location.search);
+      const path = params.get('path');
+      const title = params.get('title') || 'game';
+      const branch = params.get('branch');
+      if(path && branch){
+        window._branch = decodeURIComponent(branch);
+        openGame({ path: decodeURIComponent(path), title: decodeURIComponent(title) });
+      } else {
+        viewer.style.display = 'none';
+        gameFrame.src = 'about:blank';
+      }
+    });
+
+    searchInput.addEventListener('input', ()=> renderGrid(window._rampGames || []));
+
+    (async function init(){
+      const { branch, games } = await discoverGames();
+      window._branch = branch;
+      window._rampGames = games;
+      renderGrid(window._rampGames);
+      const params = new URLSearchParams(location.search);
+      const path = params.get('path');
+      const title = params.get('title') || 'game';
+      const b = params.get('branch') || branch;
+      if(path){
+        window._branch = decodeURIComponent(b);
+        openGame({ path: decodeURIComponent(path), title: decodeURIComponent(title), branch: decodeURIComponent(b) });
+      }
+    })();
+  </script>
+</body>
+</html>
